@@ -357,9 +357,13 @@ class Kobo:
 		if len( jsonContentUrls ) == 0:
 			raise KoboException( "Download URL list is empty for product '%s'. If this is an archived book then it must be unarchived first on the Kobo website (https://www.kobo.com/help/en-US/article/1799/restoring-deleted-books-or-magazines)." % productId )
 
+		# EPUB3FL is Kobo's fixed-layout EPUB3, used for manga, comics and heavily formatted books. It's an
+		# ordinary EPUB3 container as far as downloading and DRM removal are concerned.
+		supportedFormats = ( "EPUB3", "EPUB3FL", "KEPUB" )
+
 		for jsonContentUrl in jsonContentUrls:
 			if ( jsonContentUrl[ "DRMType" ] == "KDRM" or jsonContentUrl[ "DRMType" ] == "SignedNoDrm" ) and \
-				( jsonContentUrl[ "UrlFormat" ] == "EPUB3" or jsonContentUrl[ "UrlFormat" ] == "KEPUB" ):
+				( jsonContentUrl[ "UrlFormat" ] in supportedFormats ):
 				# Remove the mysterious "b" query parameter that causes forbidden downloads.
 				url = jsonContentUrl[ "DownloadUrl" ]
 				parsed = urllib.parse.urlparse( url )
@@ -369,6 +373,12 @@ class Kobo:
 
 				hasDrm = jsonContentUrl[ "DRMType" ] == "KDRM"
 				return url, hasDrm
+
+		# Kobo adds store previews to the library as sample-only entitlements. They can't be downloaded as
+		# real books, so say that plainly instead of dumping the format list.
+		if all( jsonContentUrl[ "UrlFormat" ].endswith( "_SAMPLE" ) for jsonContentUrl in jsonContentUrls ):
+			raise KoboException( "Product '%s' is only available as a sample/preview, not as a full book. "
+				"Remove it from your library on the Kobo website if you didn't mean to add it." % productId )
 
 		message = "Download URL for supported formats can't be found for product '%s'.\n" % productId
 		message += "Available formats:"
