@@ -123,6 +123,7 @@ Examples:
 			raise KoboException( "The output path must be a directory when downloading all books." )
 
 		bookList = Globals.Kobo.GetMyBookList()
+		failureCount = 0
 
 		for entitlement in bookList:
 			newEntitlement = entitlement.get( "NewEntitlement" )
@@ -147,7 +148,15 @@ Examples:
 				continue
 
 			print( "Downloading book to '%s'." % outputFilePath )
-			Globals.Kobo.Download( bookMetadata[ "RevisionId" ], Kobo.DisplayProfile, outputFilePath )
+			try:
+				Globals.Kobo.Download( bookMetadata[ "RevisionId" ], Kobo.DisplayProfile, outputFilePath )
+			except KoboException as e:
+				# One unavailable book (a sample, a withdrawn title) shouldn't abort the whole library.
+				failureCount += 1
+				print( colorama.Fore.LIGHTRED_EX + ( "Skipping book: %s" % e ) + colorama.Fore.RESET )
+
+		if failureCount > 0:
+			print( colorama.Fore.LIGHTYELLOW_EX + ( "%d book(s) could not be downloaded, see the messages above." % failureCount ) + colorama.Fore.RESET )
 
 	@staticmethod
 	def GetBookOrBooks( revisionId: str, outputPath: str, getAll: bool ) -> None:
@@ -283,7 +292,10 @@ Examples:
 
 				print( colorama.Fore.LIGHTYELLOW_EX + ( "Skipping archived book %s." % title ) + colorama.Fore.RESET )
 			else:
-				Commands.GetBookOrBooks( revisionId, outputPath, False )
+				try:
+					Commands.GetBookOrBooks( revisionId, outputPath, False )
+				except KoboException as e:
+					print( colorama.Fore.LIGHTRED_EX + ( "Skipping book: %s" % e ) + colorama.Fore.RESET )
 
 	@staticmethod
 	def PickBooks( outputPath: str, listAll: bool ) -> None:
