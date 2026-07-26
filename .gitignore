@@ -1,2 +1,6 @@
 /.idea/
 /kobo-book-downloader/__pycache__/
+/.codegraph/
+/books/
+*.epub
+*.epub.downloading
