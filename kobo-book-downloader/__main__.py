@@ -40,12 +40,14 @@ def Main() -> None:
 	getParser.add_argument( "OutputPath", metavar = "output-path", help = "If the output path is a directory then the file will be named automatically." )
 	getParser.add_argument( "RevisionId", metavar = "book-id", nargs = "?", help = "The identifier of the book" )
 	getParser.add_argument( "--all", default = False, action = "store_true", help = "Download all my books" )
+	getParser.add_argument( "--redownload", default = False, action = "store_true", help = "Download books again even if they are already recorded as downloaded" )
 	infoParser = subparsers.add_parser( "info", help = "Show the location of the program's configuration file" )
 	listParser = subparsers.add_parser( "list", help = "List unread books" )
 	listParser.add_argument( "--all", default = False, action = "store_true", help = "List read books too" )
 	pickParser = subparsers.add_parser( "pick", help = "Download books using interactive selection" )
 	pickParser.add_argument( "OutputPath", metavar = "output-path", help = "Output path must be an existing directory" )
 	pickParser.add_argument( "--all", default = False, action = "store_true", help = "List read books too" )
+	pickParser.add_argument( "--redownload", default = False, action = "store_true", help = "Download books again even if they are already recorded as downloaded" )
 	wishListParser = subparsers.add_parser( "wishlist", help = "List your wish listed books" )
 	arguments = argumentParser.parse_args()
 
@@ -60,11 +62,11 @@ def Main() -> None:
 		InitializeKoboApi()
 
 		if arguments.Command == "get":
-			Commands.GetBookOrBooks( arguments.RevisionId, arguments.OutputPath, arguments.all )
+			Commands.GetBookOrBooks( arguments.RevisionId, arguments.OutputPath, arguments.all, arguments.redownload )
 		elif arguments.Command == "list":
 			Commands.ListBooks( arguments.all )
 		elif arguments.Command == "pick":
-			Commands.PickBooks( arguments.OutputPath, arguments.all )
+			Commands.PickBooks( arguments.OutputPath, arguments.all, arguments.redownload )
 		elif arguments.Command == "wishlist":
 			Commands.ListWishListedBooks()
 

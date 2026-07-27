@@ -6,9 +6,10 @@ import tempfile
 # Tracks which books have already been downloaded into a directory, so that
 # re-running the program doesn't fetch the whole library again.
 #
-# The manifest is authoritative for *which revision* was downloaded; the file
-# system is authoritative for *whether the file still exists*. A book is skipped
-# only when both agree.
+# The manifest is authoritative: once a book is recorded it is never downloaded
+# again, regardless of whether the file is still on disk. Only a new revision, or
+# an explicit --redownload, fetches a book a second time. The file system is
+# consulted just once, to adopt files left by an earlier version of this tool.
 #
 # Books are keyed on CrossRevisionId, confirmed present on every entitlement in a
 # live library_sync response. See Commands.__GetBookKey -- this module takes
@@ -96,13 +97,14 @@ class Manifest:
 
 			return False
 
-		recordedFileName = entry.get( "fileName", "" )
-
-		# Rule 2: tracked, but the file is gone. Deleting a book redownloads it.
-		if not os.path.isfile( os.path.join( self.DirectoryPath, recordedFileName ) ):
-			return False
-
-		# Rule 3 skips and rule 4 downloads a new revision.
+		# Rule 2: tracked. The manifest alone decides -- a book recorded as
+		# downloaded is never fetched again, even if the file has since been moved,
+		# renamed or deleted. Deliberate: the common case for a missing file is that
+		# it was filed away into a library elsewhere, and redownloading it would
+		# undo that every run. Use --redownload to force a fresh copy.
+		#
+		# Rule 3 still downloads a new revision, which is a different file rather
+		# than a second copy of this one.
 		return entry.get( "revisionId" ) == revisionId
 
 	def Record( self, bookKey: str, revisionId: str, fileName: str, revisionDate ) -> None:

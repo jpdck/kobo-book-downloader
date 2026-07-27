@@ -67,9 +67,16 @@ python kobo-book-downloader list --help
 
 ## Download tracking
 
-When downloading into a directory, kobo-book-downloader records what it has fetched in a `.kobo-downloader.json` file in that directory, and skips books it has already downloaded. Deleting a book from the directory causes it to be downloaded again on the next run.
+When downloading into a directory, kobo-book-downloader records what it has fetched in a `.kobo-downloader.json` file in that directory, and skips books it has already downloaded.
+
+The record is authoritative: once a book has been downloaded it is never fetched again, **even if you move, rename or delete the file**. This is deliberate, so that filing books away into a library elsewhere doesn't cause them to be redownloaded on every run.
 
 Books already present in the directory are adopted on the first run without being redownloaded, as long as their filenames match the ones the program generates.
+
+To download books again regardless of the record, pass `--redownload` to `get` or `pick`. It overwrites the existing files in place:
+```
+python kobo-book-downloader get /dir/ --all --redownload
+```
 
 When Kobo publishes a new revision of a book you already have, the new revision is saved alongside the original as `Title Revised YYYY-MM-DD.epub`. The original file is never modified or deleted.
 

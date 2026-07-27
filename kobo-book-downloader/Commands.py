@@ -40,6 +40,7 @@ Examples:
   kobo-book-downloader get /dir/book.epub 01234567-89ab-cdef-0123-456789abcdef   Download book
   kobo-book-downloader get /dir/ 01234567-89ab-cdef-0123-456789abcdef            Download book and name the file automatically
   kobo-book-downloader get /dir/ --all                                           Download all your books
+  kobo-book-downloader get /dir/ --all --redownload                              Download all your books again, ignoring the download record
   kobo-book-downloader info                                                      Show the location of the program's configuration file
   kobo-book-downloader list                                                      List your unread books
   kobo-book-downloader list --all                                                List all your books
@@ -52,7 +53,9 @@ Examples:
 
 	@staticmethod
 	def __GetBookAuthor( book: dict ) -> str:
-		contributors = book.get( "ContributorRoles" )
+		# The "book" endpoint omits this field entirely for some products, unlike
+		# library_sync which always supplies it.
+		contributors = book.get( "ContributorRoles" ) or []
 
 		authors = []
 		for contributor in contributors:
@@ -145,10 +148,24 @@ Examples:
 		return datetime.datetime.now().strftime( "%Y-%m-%d" )
 
 	@staticmethod
-	def __DownloadTracked( manifest: Manifest, newEntitlement: dict, bookMetadata: dict, outputPath: str ) -> None:
-		revisionId = bookMetadata[ "RevisionId" ]
+	def __DownloadTracked( manifest: Manifest, newEntitlement: dict, bookMetadata: dict, outputPath: str, redownload: bool = False, revisionId: str = None ) -> None:
+		# The "book" endpoint returns product metadata with no RevisionId, so a
+		# single-book download passes in the id it was invoked with. library_sync
+		# does include it, which is why --all can rely on the metadata.
+		if revisionId is None:
+			revisionId = bookMetadata[ "RevisionId" ]
+
 		fileName = Commands.__MakeFileNameForBook( bookMetadata )
 		bookKey = Commands.__GetBookKey( newEntitlement, bookMetadata, fileName )
+
+		# --redownload overwrites in place: the point is to replace a file that is
+		# suspected bad, so it deliberately skips the revised-name path below.
+		if redownload:
+			outputFilePath = os.path.join( outputPath, fileName )
+			print( "Redownloading book to '%s'." % outputFilePath )
+			Globals.Kobo.Download( revisionId, Kobo.DisplayProfile, outputFilePath )
+			manifest.Record( bookKey, revisionId, fileName, Commands.__GetRevisionDate( newEntitlement, bookMetadata ) )
+			return
 
 		if manifest.IsDownloaded( bookKey, revisionId, fileName ):
 			print( colorama.Style.DIM + ( "Skipping already downloaded book '%s'." % fileName ) + colorama.Style.RESET_ALL )
@@ -158,8 +175,10 @@ Examples:
 		entry = manifest.GetEntry( bookKey )
 
 		# A book we already have under a different revision becomes a new file
-		# alongside the original, which is never modified or deleted.
-		if entry is not None and os.path.isfile( os.path.join( outputPath, entry.get( "fileName", "" ) ) ):
+		# alongside the original, which is never modified or deleted. Based on the
+		# manifest rather than on disk: the earlier file may have been moved away,
+		# and reusing its name would silently overwrite it if it comes back.
+		if entry is not None and entry.get( "fileName" ):
 			fileName = manifest.MakeRevisedFileName( entry[ "fileName" ], revisionDate )
 
 		outputFilePath = os.path.join( outputPath, fileName )
@@ -169,11 +188,11 @@ Examples:
 		manifest.Record( bookKey, revisionId, fileName, revisionDate )
 
 	@staticmethod
-	def __GetBook( revisionId: str, outputPath: str ) -> None:
+	def __GetBook( revisionId: str, outputPath: str, redownload: bool = False ) -> None:
 		if os.path.isdir( outputPath ):
 			book = Globals.Kobo.GetBookInfo( revisionId )
 			manifest = Manifest( outputPath )
-			Commands.__DownloadTracked( manifest, {}, book, outputPath )
+			Commands.__DownloadTracked( manifest, {}, book, outputPath, redownload, revisionId )
 			return
 
 		# An explicit file name is an override: download exactly what was asked for.
@@ -185,7 +204,7 @@ Examples:
 		Globals.Kobo.Download( revisionId, Kobo.DisplayProfile, outputPath )
 
 	@staticmethod
-	def __GetAllBooks( outputPath: str ) -> None:
+	def __GetAllBooks( outputPath: str, redownload: bool = False ) -> None:
 		if not os.path.isdir( outputPath ):
 			raise KoboException( "The output path must be a directory when downloading all books." )
 
@@ -213,7 +232,7 @@ Examples:
 				continue
 
 			try:
-				Commands.__DownloadTracked( manifest, newEntitlement, bookMetadata, outputPath )
+				Commands.__DownloadTracked( manifest, newEntitlement, bookMetadata, outputPath, redownload )
 			except KoboException as e:
 				# One unavailable book (a sample, a withdrawn title) shouldn't abort the whole library.
 				failureCount += 1
@@ -223,19 +242,19 @@ Examples:
 			print( colorama.Fore.LIGHTYELLOW_EX + ( "%d book(s) could not be downloaded, see the messages above." % failureCount ) + colorama.Fore.RESET )
 
 	@staticmethod
-	def GetBookOrBooks( revisionId: str, outputPath: str, getAll: bool ) -> None:
+	def GetBookOrBooks( revisionId: str, outputPath: str, getAll: bool, redownload: bool = False ) -> None:
 		revisionIdIsSet = ( revisionId is not None ) and len( revisionId ) > 0
 
 		if getAll:
 			if revisionIdIsSet:
 				raise KoboException( "Got unexpected book identifier parameter ('%s')." % revisionId )
 
-			Commands.__GetAllBooks( outputPath )
+			Commands.__GetAllBooks( outputPath, redownload )
 		else:
 			if not revisionIdIsSet:
 				raise KoboException( "Missing book identifier parameter. Did you mean to use the --all parameter?" )
 
-			Commands.__GetBook( revisionId, outputPath )
+			Commands.__GetBook( revisionId, outputPath, redownload )
 
 	@staticmethod
 	def __IsBookRead( newEntitlement: dict ) -> bool:
@@ -343,7 +362,7 @@ Examples:
 		return rowsToDownload
 
 	@staticmethod
-	def __DownloadPickedBooks( outputPath: str, rows: list ) -> None:
+	def __DownloadPickedBooks( outputPath: str, rows: list, redownload: bool = False ) -> None:
 		for columns in rows:
 			revisionId = columns[ 0 ]
 			title = columns[ 1 ]
@@ -357,16 +376,16 @@ Examples:
 				print( colorama.Fore.LIGHTYELLOW_EX + ( "Skipping archived book %s." % title ) + colorama.Fore.RESET )
 			else:
 				try:
-					Commands.__GetBook( revisionId, outputPath )
+					Commands.__GetBook( revisionId, outputPath, redownload )
 				except KoboException as e:
 					print( colorama.Fore.LIGHTRED_EX + ( "Skipping book: %s" % e ) + colorama.Fore.RESET )
 
 	@staticmethod
-	def PickBooks( outputPath: str, listAll: bool ) -> None:
+	def PickBooks( outputPath: str, listAll: bool, redownload: bool = False ) -> None:
 		rows = Commands.__GetBookList( listAll )
 		Commands.__ListBooksToPickFrom( rows )
 		rowsToDownload = Commands.__GetPickedBookRows( rows )
-		Commands.__DownloadPickedBooks( outputPath, rowsToDownload )
+		Commands.__DownloadPickedBooks( outputPath, rowsToDownload, redownload )
 
 	@staticmethod
 	def ListWishListedBooks() -> None:
