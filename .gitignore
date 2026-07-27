@@ -1,6 +1,8 @@
 /.idea/
 /kobo-book-downloader/__pycache__/
 /.codegraph/
+/.superpowers/
 /books/
 *.epub
 *.epub.downloading
+.kobo-downloader.json

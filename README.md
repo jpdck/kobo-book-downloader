@@ -65,6 +65,16 @@ To get additional help for the **list** command (it works for **get** and **pick
 python kobo-book-downloader list --help
 ```
 
+## Download tracking
+
+When downloading into a directory, kobo-book-downloader records what it has fetched in a `.kobo-downloader.json` file in that directory, and skips books it has already downloaded. Deleting a book from the directory causes it to be downloaded again on the next run.
+
+Books already present in the directory are adopted on the first run without being redownloaded, as long as their filenames match the ones the program generates.
+
+When Kobo publishes a new revision of a book you already have, the new revision is saved alongside the original as `Title Revised YYYY-MM-DD.epub`. The original file is never modified or deleted.
+
+Naming an output file explicitly (`get /dir/book.epub <id>`) always downloads, and is never skipped.
+
 ## Notes
 
 kobo-book-downloader uses the same web-based activation method to login as the Kobo e-readers. You will have to open an activation link -- that uses the official [Kobo](https://www.kobo.com/) site -- in your browser and enter the code, then you might need to login too if kobo.com asks you to. Once kobo-book-downloader has successfully logged in, it won't ask for the activation again. kobo-book-downloader doesn't store your Kobo password in any form, it works with access tokens.
