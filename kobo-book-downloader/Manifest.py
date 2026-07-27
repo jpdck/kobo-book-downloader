@@ -10,9 +10,9 @@ import tempfile
 # system is authoritative for *whether the file still exists*. A book is skipped
 # only when both agree.
 #
-# The book key field names are confirmed against a live library_sync response in
-# Commands.__GetBookKey -- this module takes whatever key it is given and never
-# looks at a Kobo response itself.
+# Books are keyed on CrossRevisionId, confirmed present on every entitlement in a
+# live library_sync response. See Commands.__GetBookKey -- this module takes
+# whatever key it is given and never looks at a Kobo response itself.
 
 class Manifest:
 	FileName = ".kobo-downloader.json"

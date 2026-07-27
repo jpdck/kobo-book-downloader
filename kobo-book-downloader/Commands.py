@@ -1,8 +1,10 @@
 from Globals import Globals
 from Kobo import Kobo, KoboException
+from Manifest import Manifest
 
 import colorama
 
+import datetime
 import os
 
 class Commands:
@@ -104,15 +106,80 @@ Examples:
 		return isRemoved
 
 	@staticmethod
+	def __GetBookKey( newEntitlement: dict, bookMetadata: dict, fileName: str ) -> str:
+		# Keyed on an identifier that is stable across revisions, so a revised book
+		# is recognized as the same book rather than a new one. The file name is the
+		# last resort: keying on RevisionId would make every revision look like a new
+		# book and download it again, which is the bug the manifest exists to fix.
+		bookEntitlement = newEntitlement.get( "BookEntitlement" ) or {}
+
+		for source, field in ( ( bookMetadata, "CrossRevisionId" ),
+			( bookEntitlement, "CrossRevisionId" ),
+			( bookEntitlement, "EntitlementId" ),
+			( bookMetadata, "ProductId" ) ):
+			value = source.get( field )
+			if value:
+				return str( value )
+
+		return fileName
+
+	@staticmethod
+	def __GetRevisionDate( newEntitlement: dict, bookMetadata: dict ) -> str:
+		# Kobo's date for the revision, used to name revised files. Falls back to
+		# today when absent -- revision detection still works, the label is just the
+		# date we noticed rather than the date it changed.
+		bookEntitlement = newEntitlement.get( "BookEntitlement" ) or {}
+
+		for source, field in ( ( bookMetadata, "PublicationDate" ),
+			( bookEntitlement, "LastModified" ),
+			( bookMetadata, "LastModified" ) ):
+			value = source.get( field )
+			if isinstance( value, str ) and len( value ) >= 10:
+				candidate = value[ :10 ]
+				try:
+					datetime.datetime.strptime( candidate, "%Y-%m-%d" )
+					return candidate
+				except ValueError:
+					continue
+
+		return datetime.datetime.now().strftime( "%Y-%m-%d" )
+
+	@staticmethod
+	def __DownloadTracked( manifest: Manifest, newEntitlement: dict, bookMetadata: dict, outputPath: str ) -> None:
+		revisionId = bookMetadata[ "RevisionId" ]
+		fileName = Commands.__MakeFileNameForBook( bookMetadata )
+		bookKey = Commands.__GetBookKey( newEntitlement, bookMetadata, fileName )
+
+		if manifest.IsDownloaded( bookKey, revisionId, fileName ):
+			print( colorama.Style.DIM + ( "Skipping already downloaded book '%s'." % fileName ) + colorama.Style.RESET_ALL )
+			return
+
+		revisionDate = Commands.__GetRevisionDate( newEntitlement, bookMetadata )
+		entry = manifest.GetEntry( bookKey )
+
+		# A book we already have under a different revision becomes a new file
+		# alongside the original, which is never modified or deleted.
+		if entry is not None and os.path.isfile( os.path.join( outputPath, entry.get( "fileName", "" ) ) ):
+			fileName = manifest.MakeRevisedFileName( entry[ "fileName" ], revisionDate )
+
+		outputFilePath = os.path.join( outputPath, fileName )
+		print( "Downloading book to '%s'." % outputFilePath )
+		Globals.Kobo.Download( revisionId, Kobo.DisplayProfile, outputFilePath )
+
+		manifest.Record( bookKey, revisionId, fileName, revisionDate )
+
+	@staticmethod
 	def __GetBook( revisionId: str, outputPath: str ) -> None:
 		if os.path.isdir( outputPath ):
 			book = Globals.Kobo.GetBookInfo( revisionId )
-			fileName = Commands.__MakeFileNameForBook( book )
-			outputPath = os.path.join( outputPath, fileName )
-		else:
-			parentPath = os.path.dirname( outputPath )
-			if not os.path.isdir( parentPath ):
-				raise KoboException( "The parent directory ('%s') of the output file must exist." % parentPath )
+			manifest = Manifest( outputPath )
+			Commands.__DownloadTracked( manifest, {}, book, outputPath )
+			return
+
+		# An explicit file name is an override: download exactly what was asked for.
+		parentPath = os.path.dirname( outputPath )
+		if not os.path.isdir( parentPath ):
+			raise KoboException( "The parent directory ('%s') of the output file must exist." % parentPath )
 
 		print( "Downloading book to '%s'." % outputPath )
 		Globals.Kobo.Download( revisionId, Kobo.DisplayProfile, outputPath )
@@ -123,6 +190,7 @@ Examples:
 			raise KoboException( "The output path must be a directory when downloading all books." )
 
 		bookList = Globals.Kobo.GetMyBookList()
+		manifest = Manifest( outputPath )
 		failureCount = 0
 
 		for entitlement in bookList:
@@ -134,9 +202,6 @@ Examples:
 			if bookMetadata is None:
 				continue
 
-			fileName = Commands.__MakeFileNameForBook( bookMetadata )
-			outputFilePath = os.path.join( outputPath, fileName )
-
 			# Skip archived books.
 			if Commands.__IsBookArchived( newEntitlement ):
 				title = bookMetadata[ "Title" ]
@@ -147,9 +212,8 @@ Examples:
 				print( colorama.Fore.LIGHTYELLOW_EX + ( "Skipping archived book %s." % title ) + colorama.Fore.RESET )
 				continue
 
-			print( "Downloading book to '%s'." % outputFilePath )
 			try:
-				Globals.Kobo.Download( bookMetadata[ "RevisionId" ], Kobo.DisplayProfile, outputFilePath )
+				Commands.__DownloadTracked( manifest, newEntitlement, bookMetadata, outputPath )
 			except KoboException as e:
 				# One unavailable book (a sample, a withdrawn title) shouldn't abort the whole library.
 				failureCount += 1
@@ -293,7 +357,7 @@ Examples:
 				print( colorama.Fore.LIGHTYELLOW_EX + ( "Skipping archived book %s." % title ) + colorama.Fore.RESET )
 			else:
 				try:
-					Commands.GetBookOrBooks( revisionId, outputPath, False )
+					Commands.__GetBook( revisionId, outputPath )
 				except KoboException as e:
 					print( colorama.Fore.LIGHTRED_EX + ( "Skipping book: %s" % e ) + colorama.Fore.RESET )
 
