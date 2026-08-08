@@ -28,6 +28,13 @@ def InitializeKoboApi() -> None:
 	if not Globals.Settings.IsLoggedIn():
 		Globals.Kobo.Login()
 
+# Books only, unless asked otherwise: an existing "get --all" must keep meaning the
+# same thing rather than silently starting to pull hours of audio.
+def AddFormatArguments( parser ) -> None:
+	group = parser.add_mutually_exclusive_group()
+	group.add_argument( "--audiobooks", default = False, action = "store_true", help = "Audiobooks instead of books" )
+	group.add_argument( "--all-formats", default = False, action = "store_true", dest = "AllFormats", help = "Books and audiobooks" )
+
 def Main() -> None:
 	InitializeGlobals()
 	colorama.init()
@@ -41,13 +48,16 @@ def Main() -> None:
 	getParser.add_argument( "RevisionId", metavar = "book-id", nargs = "?", help = "The identifier of the book" )
 	getParser.add_argument( "--all", default = False, action = "store_true", help = "Download all my books" )
 	getParser.add_argument( "--redownload", default = False, action = "store_true", help = "Download books again even if they are already recorded as downloaded" )
+	AddFormatArguments( getParser )
 	infoParser = subparsers.add_parser( "info", help = "Show the location of the program's configuration file" )
 	listParser = subparsers.add_parser( "list", help = "List unread books" )
 	listParser.add_argument( "--all", default = False, action = "store_true", help = "List read books too" )
+	AddFormatArguments( listParser )
 	pickParser = subparsers.add_parser( "pick", help = "Download books using interactive selection" )
 	pickParser.add_argument( "OutputPath", metavar = "output-path", help = "Output path must be an existing directory" )
 	pickParser.add_argument( "--all", default = False, action = "store_true", help = "List read books too" )
 	pickParser.add_argument( "--redownload", default = False, action = "store_true", help = "Download books again even if they are already recorded as downloaded" )
+	AddFormatArguments( pickParser )
 	wishListParser = subparsers.add_parser( "wishlist", help = "List your wish listed books" )
 	arguments = argumentParser.parse_args()
 
@@ -61,12 +71,15 @@ def Main() -> None:
 	else:
 		InitializeKoboApi()
 
+		# wishlist takes no format arguments.
+		formatFilter = Commands.GetFormatFilter( getattr( arguments, "audiobooks", False ), getattr( arguments, "AllFormats", False ) )
+
 		if arguments.Command == "get":
-			Commands.GetBookOrBooks( arguments.RevisionId, arguments.OutputPath, arguments.all, arguments.redownload )
+			Commands.GetBookOrBooks( arguments.RevisionId, arguments.OutputPath, arguments.all, arguments.redownload, formatFilter )
 		elif arguments.Command == "list":
-			Commands.ListBooks( arguments.all )
+			Commands.ListBooks( arguments.all, formatFilter )
 		elif arguments.Command == "pick":
-			Commands.PickBooks( arguments.OutputPath, arguments.all, arguments.redownload )
+			Commands.PickBooks( arguments.OutputPath, arguments.all, arguments.redownload, formatFilter )
 		elif arguments.Command == "wishlist":
 			Commands.ListWishListedBooks()
 

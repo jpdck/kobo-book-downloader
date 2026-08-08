@@ -5,6 +5,7 @@ from Manifest import Manifest
 import colorama
 
 import datetime
+import json
 import os
 
 class Commands:
@@ -33,20 +34,30 @@ Commands:
   wishlist List your wish listed books
 
 Optional arguments:
-  -h, --help    Show this help message and exit
-  --verbose     Print debugging information
+  -h, --help      Show this help message and exit
+  --verbose       Print debugging information
+  --audiobooks    Work with audiobooks instead of books (get, list and pick)
+  --all-formats   Work with both books and audiobooks (get, list and pick)
+
+Books and audiobooks:
+  get, list and pick handle books unless told otherwise. Audiobooks are downloaded as a
+  directory per book, holding the audio files and a chapters.json listing the chapters.
 
 Examples:
   kobo-book-downloader get /dir/book.epub 01234567-89ab-cdef-0123-456789abcdef   Download book
   kobo-book-downloader get /dir/ 01234567-89ab-cdef-0123-456789abcdef            Download book and name the file automatically
   kobo-book-downloader get /dir/ --all                                           Download all your books
   kobo-book-downloader get /dir/ --all --redownload                              Download all your books again, ignoring the download record
+  kobo-book-downloader get /dir/ --all --audiobooks                              Download all your audiobooks
+  kobo-book-downloader get /dir/ --all --all-formats                             Download all your books and audiobooks
   kobo-book-downloader info                                                      Show the location of the program's configuration file
   kobo-book-downloader list                                                      List your unread books
   kobo-book-downloader list --all                                                List all your books
+  kobo-book-downloader list --all --audiobooks                                   List all your audiobooks
   kobo-book-downloader list --help                                               Get additional help for the list command (it works for get and pick too)
   kobo-book-downloader pick /dir/                                                Interactively select unread books to download
   kobo-book-downloader pick /dir/ --all                                          Interactively select books to download
+  kobo-book-downloader pick /dir/ --audiobooks                                   Interactively select audiobooks to download
   kobo-book-downloader wishlist                                                  List your wish listed books"""
 
 		print( usage )
@@ -70,6 +81,56 @@ Examples:
 			authors.append( contributors[ 0 ][ "Name" ] )
 
 		return " & ".join( authors )
+
+	# "books" (the default) keeps the original behaviour of every existing invocation,
+	# "audiobooks" selects only audiobooks, "all" takes both.
+	@staticmethod
+	def __MatchesFormatFilter( isAudiobook: bool, formatFilter: str ) -> bool:
+		if formatFilter == "all":
+			return True
+
+		if formatFilter == "audiobooks":
+			return isAudiobook
+
+		return not isAudiobook
+
+	@staticmethod
+	def GetFormatFilter( audiobooksOnly: bool, allFormats: bool ) -> str:
+		if allFormats:
+			return "all"
+
+		if audiobooksOnly:
+			return "audiobooks"
+
+		return "books"
+
+	# library_sync returns audiobooks alongside books, under their own keys. Everything
+	# downstream works off the metadata dictionary, so this is the only place that has
+	# to know which of the two an entitlement is.
+	@staticmethod
+	def __GetEntitlementContent( newEntitlement: dict ):
+		bookMetadata = newEntitlement.get( "BookMetadata" )
+		if bookMetadata is not None:
+			return bookMetadata, False
+
+		audiobookMetadata = newEntitlement.get( "AudiobookMetadata" )
+		if audiobookMetadata is not None:
+			return audiobookMetadata, True
+
+		return None, False
+
+	@staticmethod
+	def __IsAudiobookEntitlement( newEntitlement: dict ) -> bool:
+		return newEntitlement.get( "AudiobookMetadata" ) is not None
+
+	# Books and audiobooks keep their entitlement under differently named keys.
+	@staticmethod
+	def __GetEntitlement( newEntitlement: dict ) -> dict:
+		entitlement = newEntitlement.get( "BookEntitlement" )
+		if entitlement is not None:
+			return entitlement
+
+		return newEntitlement.get( "AudiobookEntitlement" ) or {}
 
 	@staticmethod
 	def __SanitizeFileName( fileName: str ) -> str:
@@ -95,6 +156,122 @@ Examples:
 		fileName += ".epub"
 
 		return fileName
+
+	# The book equivalent appends ".epub"; an audiobook becomes a directory of parts,
+	# so the sanitized name is used as-is.
+	@staticmethod
+	def __MakeDirectoryNameForAudiobook( audiobook: dict ) -> str:
+		directoryName = ""
+
+		author = Commands.__GetBookAuthor( audiobook )
+		if len( author ) > 0:
+			directoryName = author + " - "
+
+		directoryName += audiobook[ "Title" ]
+		directoryName = Commands.__SanitizeFileName( directoryName )
+
+		# Sanitizing can strip a title down to nothing, and an empty directory name
+		# would write the parts straight into the output directory.
+		if len( directoryName ) == 0:
+			directoryName = "Audiobook"
+
+		return directoryName
+
+	# Chapter titles come from the manifest's Navigation list, whose PartId indexes into
+	# the Spine. Most audiobooks number the parts from zero, but some number them from
+	# one, which would shift every title onto the wrong part. Detect that by looking at
+	# the range actually used rather than trusting either convention.
+	@staticmethod
+	def __GetAudiobookChapterTitles( manifest: dict, partCount: int ) -> dict:
+		navigation = manifest.get( "Navigation" ) or []
+
+		partIds = [ navigationItem.get( "PartId" ) for navigationItem in navigation ]
+		partIds = [ partId for partId in partIds if isinstance( partId, int ) ]
+
+		# One-based only if nothing refers to part zero and something refers to the part
+		# one past the end -- both true together mean the whole list is shifted up by one.
+		offset = 0
+		if len( partIds ) > 0 and min( partIds ) == 1 and max( partIds ) == partCount:
+			offset = 1
+
+		titles = {}
+		for navigationItem in navigation:
+			partId = navigationItem.get( "PartId" )
+			title = navigationItem.get( "Title" )
+			if isinstance( partId, int ) and title:
+				titles[ partId - offset ] = title
+
+		return titles
+
+	@staticmethod
+	def __MakeAudiobookPartFileName( index: int, chapterTitles: dict, partCount: int ) -> str:
+		# Zero padded so the parts sort correctly in any file browser or player.
+		digits = max( 3, len( "%d" % partCount ) )
+		number = str( index + 1 ).rjust( digits, "0" )
+
+		title = Commands.__SanitizeFileName( chapterTitles.get( index, "" ) )
+		if len( title ) > 0:
+			return "%s - %s.mp3" % ( number, title )
+
+		return "%s.mp3" % number
+
+	# The sidecar keeps the chapter data that the file names can't carry -- durations,
+	# and the original titles before sanitizing removed characters from them.
+	@staticmethod
+	def __WriteAudiobookChapters( manifest: dict, outputDirectoryPath: str, chapterTitles: dict ) -> None:
+		chapters = []
+		spine = manifest.get( "Spine" ) or []
+
+		for index, spineItem in enumerate( spine ):
+			chapters.append( {
+				"part": index + 1,
+				"title": chapterTitles.get( index, "" ),
+				"duration": spineItem.get( "Duration" ),
+				"fileName": Commands.__MakeAudiobookPartFileName( index, chapterTitles, len( spine ) ),
+			} )
+
+		filePath = os.path.join( outputDirectoryPath, "chapters.json" )
+
+		try:
+			with open( filePath, "w", encoding = "utf-8" ) as f:
+				f.write( json.dumps( chapters, indent = 4 ) )
+		except OSError as e:
+			# The audio is already on disk; losing the sidecar must not fail the run.
+			print( "Warning: could not write '%s' (%s)." % ( filePath, e ) )
+
+	@staticmethod
+	def __DownloadAudiobookTracked( manifest: Manifest, newEntitlement: dict, audiobookMetadata: dict, outputPath: str, redownload: bool = False ) -> None:
+		revisionId = audiobookMetadata[ "RevisionId" ]
+		directoryName = Commands.__MakeDirectoryNameForAudiobook( audiobookMetadata )
+		bookKey = Commands.__GetBookKey( newEntitlement, audiobookMetadata, directoryName )
+
+		if not redownload and manifest.IsDownloaded( bookKey, revisionId, directoryName ):
+			print( colorama.Style.DIM + ( "Skipping already downloaded audiobook '%s'." % directoryName ) + colorama.Style.RESET_ALL )
+			return
+
+		revisionDate = Commands.__GetRevisionDate( newEntitlement, audiobookMetadata )
+
+		# A revised audiobook goes into its own directory, leaving the existing one
+		# untouched, exactly as a revised book becomes a separate file.
+		entry = manifest.GetEntry( bookKey )
+		if not redownload and entry is not None and entry.get( "fileName" ):
+			directoryName = manifest.MakeRevisedFileName( entry[ "fileName" ], revisionDate, False )
+
+		outputDirectoryPath = os.path.join( outputPath, directoryName )
+		print( "Downloading audiobook to '%s'." % outputDirectoryPath )
+
+		manifestUrl = Kobo.GetAudiobookManifestUrl( audiobookMetadata )
+		audiobookManifest = Globals.Kobo.GetAudiobookManifest( manifestUrl )
+		partCount = len( audiobookManifest.get( "Spine" ) or [] )
+		chapterTitles = Commands.__GetAudiobookChapterTitles( audiobookManifest, partCount )
+
+		makePartFileName = lambda index, spineItem: Commands.__MakeAudiobookPartFileName( index, chapterTitles, partCount )
+
+		downloadedPartCount = Globals.Kobo.DownloadAudiobook( audiobookManifest, outputDirectoryPath, audiobookMetadata[ "Title" ], makePartFileName )
+		Commands.__WriteAudiobookChapters( audiobookManifest, outputDirectoryPath, chapterTitles )
+
+		print( "Downloaded %d part(s)." % downloadedPartCount )
+		manifest.Record( bookKey, revisionId, directoryName, revisionDate )
 
 	@staticmethod
 	def __IsBookArchived( newEntitlement: dict ) -> bool:
@@ -187,13 +364,48 @@ Examples:
 
 		manifest.Record( bookKey, revisionId, fileName, revisionDate )
 
+	# A revision id on its own doesn't say whether it belongs to a book or an
+	# audiobook, and the "book" endpoint only answers for books. Look it up in the
+	# library so that "get <id>" works for either without the user having to say which.
 	@staticmethod
-	def __GetBook( revisionId: str, outputPath: str, redownload: bool = False ) -> None:
+	def __FindAudiobookEntitlement( revisionId: str ):
+		for entitlement in Globals.Kobo.GetMyBookList():
+			newEntitlement = entitlement.get( "NewEntitlement" )
+			if newEntitlement is None:
+				continue
+
+			audiobookMetadata = newEntitlement.get( "AudiobookMetadata" )
+			if audiobookMetadata is None:
+				continue
+
+			if audiobookMetadata.get( "RevisionId" ) == revisionId:
+				return newEntitlement, audiobookMetadata
+
+		return None, None
+
+	# isAudiobook is passed in by callers that already know (pick, which has just listed
+	# the library); None means look it up.
+	@staticmethod
+	def __GetBook( revisionId: str, outputPath: str, redownload: bool = False, isAudiobook = None ) -> None:
 		if os.path.isdir( outputPath ):
-			book = Globals.Kobo.GetBookInfo( revisionId )
+			newEntitlement, audiobookMetadata = ( None, None )
+			if isAudiobook is not False:
+				newEntitlement, audiobookMetadata = Commands.__FindAudiobookEntitlement( revisionId )
+
 			manifest = Manifest( outputPath )
+
+			if audiobookMetadata is not None:
+				Commands.__DownloadAudiobookTracked( manifest, newEntitlement, audiobookMetadata, outputPath, redownload )
+				return
+
+			book = Globals.Kobo.GetBookInfo( revisionId )
 			Commands.__DownloadTracked( manifest, {}, book, outputPath, redownload, revisionId )
 			return
+
+		# An audiobook is a directory of parts, so there is no single file to write and
+		# no sensible way to honour an explicit file name.
+		if isAudiobook or ( isAudiobook is None and Commands.__FindAudiobookEntitlement( revisionId )[ 1 ] is not None ):
+			raise KoboException( "'%s' is an audiobook, which is downloaded as a directory of audio files. Give an existing directory as the output path instead of a file name." % revisionId )
 
 		# An explicit file name is an override: download exactly what was asked for.
 		parentPath = os.path.dirname( outputPath )
@@ -204,7 +416,7 @@ Examples:
 		Globals.Kobo.Download( revisionId, Kobo.DisplayProfile, outputPath )
 
 	@staticmethod
-	def __GetAllBooks( outputPath: str, redownload: bool = False ) -> None:
+	def __GetAllBooks( outputPath: str, redownload: bool = False, formatFilter: str = "books" ) -> None:
 		if not os.path.isdir( outputPath ):
 			raise KoboException( "The output path must be a directory when downloading all books." )
 
@@ -217,8 +429,11 @@ Examples:
 			if newEntitlement is None:
 				continue
 
-			bookMetadata = newEntitlement.get( "BookMetadata" )
+			bookMetadata, isAudiobook = Commands.__GetEntitlementContent( newEntitlement )
 			if bookMetadata is None:
+				continue
+
+			if not Commands.__MatchesFormatFilter( isAudiobook, formatFilter ):
 				continue
 
 			# Skip archived books.
@@ -232,7 +447,10 @@ Examples:
 				continue
 
 			try:
-				Commands.__DownloadTracked( manifest, newEntitlement, bookMetadata, outputPath, redownload )
+				if isAudiobook:
+					Commands.__DownloadAudiobookTracked( manifest, newEntitlement, bookMetadata, outputPath, redownload )
+				else:
+					Commands.__DownloadTracked( manifest, newEntitlement, bookMetadata, outputPath, redownload )
 			except KoboException as e:
 				# One unavailable book (a sample, a withdrawn title) shouldn't abort the whole library.
 				failureCount += 1
@@ -242,14 +460,14 @@ Examples:
 			print( colorama.Fore.LIGHTYELLOW_EX + ( "%d book(s) could not be downloaded, see the messages above." % failureCount ) + colorama.Fore.RESET )
 
 	@staticmethod
-	def GetBookOrBooks( revisionId: str, outputPath: str, getAll: bool, redownload: bool = False ) -> None:
+	def GetBookOrBooks( revisionId: str, outputPath: str, getAll: bool, redownload: bool = False, formatFilter: str = "books" ) -> None:
 		revisionIdIsSet = ( revisionId is not None ) and len( revisionId ) > 0
 
 		if getAll:
 			if revisionIdIsSet:
 				raise KoboException( "Got unexpected book identifier parameter ('%s')." % revisionId )
 
-			Commands.__GetAllBooks( outputPath, redownload )
+			Commands.__GetAllBooks( outputPath, redownload, formatFilter )
 		else:
 			if not revisionIdIsSet:
 				raise KoboException( "Missing book identifier parameter. Did you mean to use the --all parameter?" )
@@ -270,7 +488,7 @@ Examples:
 		return status == "Finished"
 
 	@staticmethod
-	def __GetBookList( listAll: bool ) -> list:
+	def __GetBookList( listAll: bool, formatFilter: str = "books" ) -> list:
 		bookList = Globals.Kobo.GetMyBookList()
 		rows = []
 
@@ -279,8 +497,15 @@ Examples:
 			if newEntitlement is None:
 				continue
 
-			bookEntitlement = newEntitlement.get( "BookEntitlement" )
-			if bookEntitlement is None:
+			bookMetadata, isAudiobook = Commands.__GetEntitlementContent( newEntitlement )
+			if bookMetadata is None:
+				continue
+
+			if not Commands.__MatchesFormatFilter( isAudiobook, formatFilter ):
+				continue
+
+			bookEntitlement = Commands.__GetEntitlement( newEntitlement )
+			if len( bookEntitlement ) == 0:
 				continue
 
 			# Skip saved previews.
@@ -294,19 +519,19 @@ Examples:
 			if ( not listAll ) and Commands.__IsBookRead( newEntitlement ):
 				continue
 
-			bookMetadata = newEntitlement[ "BookMetadata" ]
 			book = [ bookMetadata[ "RevisionId" ],
 				bookMetadata[ "Title" ],
 				Commands.__GetBookAuthor( bookMetadata ),
-				Commands.__IsBookArchived( newEntitlement ) ]
+				Commands.__IsBookArchived( newEntitlement ),
+				isAudiobook ]
 			rows.append( book )
 
 		rows = sorted( rows, key = lambda columns: columns[ 1 ].lower() )
 		return rows
 
 	@staticmethod
-	def ListBooks( listAll: bool ) -> None:
-		rows = Commands.__GetBookList( listAll )
+	def ListBooks( listAll: bool, formatFilter: str = "books" ) -> None:
+		rows = Commands.__GetBookList( listAll, formatFilter )
 		for columns in rows:
 			revisionId = colorama.Style.DIM + columns[ 0 ] + colorama.Style.RESET_ALL
 			title = colorama.Style.BRIGHT + columns[ 1 ] + colorama.Style.RESET_ALL
@@ -368,6 +593,7 @@ Examples:
 			title = columns[ 1 ]
 			author = columns[ 2 ]
 			archived = columns[ 3 ]
+			isAudiobook = columns[ 4 ]
 
 			if archived:
 				if len( author ) > 0:
@@ -376,13 +602,13 @@ Examples:
 				print( colorama.Fore.LIGHTYELLOW_EX + ( "Skipping archived book %s." % title ) + colorama.Fore.RESET )
 			else:
 				try:
-					Commands.__GetBook( revisionId, outputPath, redownload )
+					Commands.__GetBook( revisionId, outputPath, redownload, isAudiobook )
 				except KoboException as e:
 					print( colorama.Fore.LIGHTRED_EX + ( "Skipping book: %s" % e ) + colorama.Fore.RESET )
 
 	@staticmethod
-	def PickBooks( outputPath: str, listAll: bool, redownload: bool = False ) -> None:
-		rows = Commands.__GetBookList( listAll )
+	def PickBooks( outputPath: str, listAll: bool, redownload: bool = False, formatFilter: str = "books" ) -> None:
+		rows = Commands.__GetBookList( listAll, formatFilter )
 		Commands.__ListBooksToPickFrom( rows )
 		rowsToDownload = Commands.__GetPickedBookRows( rows )
 		Commands.__DownloadPickedBooks( outputPath, rowsToDownload, redownload )

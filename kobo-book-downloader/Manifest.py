@@ -68,8 +68,11 @@ class Manifest:
 			# already on disk, so this must not fail the run.
 			print( "Warning: could not write '%s' (%s)." % ( self.FilePath, e ) )
 
-	def MakeRevisedFileName( self, baseName: str, revisionDate: str ) -> str:
-		root, extension = os.path.splitext( baseName )
+	# hasExtension is False for audiobooks, which are directories rather than files.
+	# Splitting those would treat an author's initial as an extension, turning
+	# "Bridget E. Baker - Ensnared" into "Bridget E Revised <date>. Baker - Ensnared".
+	def MakeRevisedFileName( self, baseName: str, revisionDate: str, hasExtension: bool = True ) -> str:
+		root, extension = os.path.splitext( baseName ) if hasExtension else ( baseName, "" )
 		candidate = "%s Revised %s%s" % ( root, revisionDate, extension )
 
 		# The unsuffixed name is reserved for the first file bearing this date.
@@ -90,8 +93,9 @@ class Manifest:
 		if entry is None:
 			# Rule 1: not tracked. If the computed file is already on disk it was
 			# downloaded by an earlier version of this tool -- adopt it rather than
-			# fetching the whole library again.
-			if os.path.isfile( os.path.join( self.DirectoryPath, fileName ) ):
+			# fetching the whole library again. An audiobook is a directory of parts
+			# rather than a single file, so either kind of entry counts as present.
+			if os.path.exists( os.path.join( self.DirectoryPath, fileName ) ):
 				self.Record( bookKey, revisionId, fileName, None )
 				return True
 

@@ -396,6 +396,110 @@ class Kobo:
 			for chunk in response.iter_content( chunk_size = 1024 * 256 ):
 				f.write( chunk )
 
+	# Some audiobooks are hosted for Kobo by Blackstone, whose bucket is configured so
+	# that the caller pays for the transfer. Its presigned URLs sign an extra header,
+	# and the download is refused with SignatureDoesNotMatch unless the header is sent.
+	# Kobo names the header in its own initialization settings, so take it from there
+	# rather than hard coding it.
+	#
+	# The header has to go on the storage request only. Sending it to Kobo instead
+	# breaks the download token, so the redirect is followed by hand rather than by
+	# requests, which would otherwise carry the header across or drop it depending on
+	# the hosts involved.
+	def __DownloadAudioPartToFile( self, url, outputPath: str ) -> None:
+		Globals.Logger.debug( "Kobo.__DownloadAudioPartToFile" )
+
+		response = self.Session.get( url, stream = True, allow_redirects = False )
+
+		if response.is_redirect and response.headers.get( "location" ):
+			location = response.headers[ "location" ]
+			response.close()
+
+			headers = {}
+			blackstoneHeader = self.InitializationSettings.get( "blackstone_header" ) or {}
+			key = blackstoneHeader.get( "key" )
+			value = blackstoneHeader.get( "value" )
+			if key and value:
+				headers[ key ] = value
+
+			response = self.Session.get( location, headers = headers, stream = True )
+
+		response.raise_for_status()
+		with open( outputPath, "wb" ) as f:
+			for chunk in response.iter_content( chunk_size = 1024 * 256 ):
+				f.write( chunk )
+
+	# Audiobooks are delivered as a manifest listing the individual audio parts, unlike
+	# books which are a single file behind the "content_access_book" endpoint. The
+	# manifest URL comes straight from the library_sync metadata, so there is no
+	# separate content access call.
+	def GetAudiobookManifest( self, manifestUrl: str ) -> dict:
+		Globals.Logger.debug( "Kobo.GetAudiobookManifest" )
+
+		headers = Kobo.GetHeaderWithAccessToken()
+		hooks = Kobo.__GetReauthenticationHook()
+
+		response = self.Session.get( manifestUrl, headers = headers, hooks = hooks )
+		response.raise_for_status()
+		return response.json()
+
+	@staticmethod
+	def GetAudiobookManifestUrl( audiobookMetadata: dict ) -> str:
+		downloadUrls = audiobookMetadata.get( "DownloadUrls" ) or []
+
+		for downloadUrl in downloadUrls:
+			if downloadUrl.get( "Format" ) == "MANIFEST":
+				return downloadUrl[ "Url" ]
+
+		raise KoboException( "No audiobook manifest URL found for '%s'." % audiobookMetadata.get( "Title", "" ) )
+
+	# Every audiobook observed in a live library reports DrmType "None" and an empty
+	# key list, so the parts are plain audio files. Bail out loudly rather than writing
+	# undecryptable data if Kobo ever starts encrypting them.
+	@staticmethod
+	def __CheckAudiobookIsNotEncrypted( manifest: dict, title: str ) -> None:
+		drm = manifest.get( "Drm" ) or {}
+		drmType = drm.get( "DrmType" ) or ""
+
+		if len( drmType ) > 0 and drmType.lower() != "none":
+			raise KoboException( "Audiobook '%s' is DRM protected ('%s'), which is not supported." % ( title, drmType ) )
+
+	# The download token embedded in the part URLs expires, so the parts are fetched
+	# right after the manifest rather than collected for later.
+	def DownloadAudiobook( self, manifest: dict, outputDirectoryPath: str, title: str, makePartFileName ) -> int:
+		Globals.Logger.debug( "Kobo.DownloadAudiobook" )
+
+		Kobo.__CheckAudiobookIsNotEncrypted( manifest, title )
+
+		spine = manifest.get( "Spine" ) or []
+		if len( spine ) == 0:
+			raise KoboException( "Audiobook '%s' has no audio parts." % title )
+
+		os.makedirs( outputDirectoryPath, exist_ok = True )
+
+		for index, spineItem in enumerate( spine ):
+			fileName = makePartFileName( index, spineItem )
+			outputPath = os.path.join( outputDirectoryPath, fileName )
+
+			# Parts already present are kept, so an interrupted run resumes instead of
+			# refetching hours of audio. The temporary name means a partial file is
+			# never mistaken for a complete one.
+			if os.path.isfile( outputPath ):
+				continue
+
+			temporaryOutputPath = outputPath + ".downloading"
+
+			try:
+				self.__DownloadAudioPartToFile( spineItem[ "Url" ], temporaryOutputPath )
+				os.rename( temporaryOutputPath, outputPath )
+			except:
+				if os.path.isfile( temporaryOutputPath ):
+					os.remove( temporaryOutputPath )
+
+				raise
+
+		return len( spine )
+
 	# Downloading archived books is not possible, the "content_access_book" API endpoint returns with empty ContentKeys
 	# and ContentUrls for them.
 	def Download( self, productId: str, displayProfile: str, outputPath: str ) -> None:

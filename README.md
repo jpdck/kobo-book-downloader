@@ -1,6 +1,6 @@
 ## kobo-book-downloader
 
-With kobo-book-downloader you can download your purchased [Kobo](https://www.kobo.com/) books and remove the Digital Rights Management (DRM) protection from them. The resulting [EPUB](https://en.wikipedia.org/wiki/EPUB) files can be read with, amongst others, [KOReader](https://github.com/koreader/koreader).
+With kobo-book-downloader you can download your purchased [Kobo](https://www.kobo.com/) books and remove the Digital Rights Management (DRM) protection from them. The resulting [EPUB](https://en.wikipedia.org/wiki/EPUB) files can be read with, amongst others, [KOReader](https://github.com/koreader/koreader). It can download your audiobooks too — see [Audiobooks](#audiobooks).
 
 Unlike [obok.py](https://github.com/apprenticeharper/DeDRM_tools/blob/master/Other_Tools/Kobo/obok.py), kobo-book-downloader doesn't require any pre-downloading through a Kobo e-reader or application.
 
@@ -64,6 +64,40 @@ To get additional help for the **list** command (it works for **get** and **pick
 ```
 python kobo-book-downloader list --help
 ```
+
+## Audiobooks
+
+The **get**, **list** and **pick** commands handle books unless you ask for audiobooks. Add `--audiobooks` for audiobooks instead of books, or `--all-formats` for both. Without either flag the commands behave exactly as before.
+
+To list your audiobooks:
+```
+python kobo-book-downloader list --all --audiobooks
+```
+To download all of your audiobooks:
+```
+python kobo-book-downloader get /dir/ --all --audiobooks
+```
+To download everything, books and audiobooks alike:
+```
+python kobo-book-downloader get /dir/ --all --all-formats
+```
+
+An audiobook is delivered as a set of audio files rather than a single one, so each is downloaded into its own directory, named after the author and title:
+
+```
+/dir/Bridget E. Baker - Ensnared/
+    001 - Opening Credits.mp3
+    002 - Prologue.mp3
+    003 - Chapter 1.mp3
+    ...
+    chapters.json
+```
+
+The `chapters.json` file lists each part with its chapter title and duration in seconds, keeping the full titles even where the file names had to be shortened.
+
+Audiobooks are not DRM protected, so nothing has to be removed from them. Since the output is a directory, the output path for an audiobook must be a directory rather than a file name.
+
+Individual parts already present are kept, so an interrupted download continues where it left off instead of fetching the whole audiobook again.
 
 ## Download tracking
 
