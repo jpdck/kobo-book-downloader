@@ -1,0 +1,14 @@
+.git/
+.gitignore
+.idea/
+.claude/
+books/
+config/
+data/
+**/__pycache__/
+*.epub
+*.epub.downloading
+.kobo-downloader.json
+screenshot.png
+Dockerfile
+compose.yaml

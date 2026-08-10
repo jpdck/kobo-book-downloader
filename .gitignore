@@ -1,6 +1,7 @@
 /.idea/
 /kobo-book-downloader/__pycache__/
 /books/
+/config/
 *.epub
 *.epub.downloading
 .kobo-downloader.json

@@ -18,6 +18,37 @@ From your terminal enter the directory where kobo-book-downloader is then run `p
 
 It has been tested on Linux but it should work on other platforms too.
 
+## Docker
+
+Build the image:
+```
+docker compose build
+```
+
+Kobo's activation is web-based, so the first run has to be interactive — there is no
+headless way around it. Run any command with a terminal attached and follow the prompt
+to open kobo.com/activate and enter the code:
+```
+docker compose run --rm kobo list
+```
+
+The resulting tokens are written to `./config/kobo-book-downloader.json`, which is
+mounted into the container. Once that file exists every later run is unattended, since
+the access token is refreshed automatically, so downloads can be run from cron:
+```
+docker compose run --rm kobo get /books --all
+```
+
+Books land in `./books`, along with the `.kobo-downloader.json` manifest that tracks
+what has already been downloaded.
+
+Set `UID` and `GID` in a `.env` file to your own IDs (`id -u; id -g` — typically
+`501`/`20` on macOS, `1000`/`1000` on Linux) so downloaded files are owned by you:
+```
+UID=501
+GID=20
+```
+
 ## Usage
 
 To interactively select from your unread books to download:

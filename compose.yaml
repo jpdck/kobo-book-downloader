@@ -1,0 +1,13 @@
+services:
+  kobo:
+    build: .
+    image: kobo-book-downloader
+    volumes:
+      - ./config:/config
+      - ./books:/books
+    # Match the host user so downloaded books aren't root-owned. Override with
+    # UID/GID in a .env file if yours differ from the usual 501:20 on macOS.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Needed only for the one-time activation and for `pick`; harmless otherwise.
+    stdin_open: true
+    tty: true
