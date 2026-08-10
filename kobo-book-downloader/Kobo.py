@@ -387,14 +387,34 @@ class Kobo:
 
 		raise KoboException( message )
 
+	# Kobo's CDN occasionally stalls mid-transfer, which used to abort an entire
+	# --all run partway through. Retry the whole transfer a few times with a
+	# read timeout so a stalled socket fails fast instead of hanging forever.
+	# The file is rewritten from scratch each attempt: the download URLs are
+	# presigned and range requests aren't reliably honoured.
+	DownloadAttempts = 5
+	DownloadTimeout = ( 30, 120 ) # connect, read
+
+	def __StreamToFile( self, requestFactory, outputPath: str ) -> None:
+		for attempt in range( 1, Kobo.DownloadAttempts + 1 ):
+			try:
+				response = requestFactory()
+				response.raise_for_status()
+				with open( outputPath, "wb" ) as f:
+					for chunk in response.iter_content( chunk_size = 1024 * 256 ):
+						f.write( chunk )
+				return
+			except ( requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError ) as e:
+				if attempt == Kobo.DownloadAttempts:
+					raise
+				delay = 2 ** ( attempt - 1 )
+				print( "Download failed (%s), retrying in %d second(s) [attempt %d/%d]." % ( type( e ).__name__, delay, attempt + 1, Kobo.DownloadAttempts ) )
+				time.sleep( delay )
+
 	def __DownloadToFile( self, url, outputPath: str ) -> None:
 		Globals.Logger.debug( "Kobo.__DownloadToFile" )
 
-		response = self.Session.get( url, stream = True )
-		response.raise_for_status()
-		with open( outputPath, "wb" ) as f:
-			for chunk in response.iter_content( chunk_size = 1024 * 256 ):
-				f.write( chunk )
+		self.__StreamToFile( lambda: self.Session.get( url, stream = True, timeout = Kobo.DownloadTimeout ), outputPath )
 
 	# Some audiobooks are hosted for Kobo by Blackstone, whose bucket is configured so
 	# that the caller pays for the transfer. Its presigned URLs sign an extra header,
@@ -409,25 +429,25 @@ class Kobo:
 	def __DownloadAudioPartToFile( self, url, outputPath: str ) -> None:
 		Globals.Logger.debug( "Kobo.__DownloadAudioPartToFile" )
 
-		response = self.Session.get( url, stream = True, allow_redirects = False )
+		def request():
+			response = self.Session.get( url, stream = True, allow_redirects = False, timeout = Kobo.DownloadTimeout )
 
-		if response.is_redirect and response.headers.get( "location" ):
-			location = response.headers[ "location" ]
-			response.close()
+			if response.is_redirect and response.headers.get( "location" ):
+				location = response.headers[ "location" ]
+				response.close()
 
-			headers = {}
-			blackstoneHeader = self.InitializationSettings.get( "blackstone_header" ) or {}
-			key = blackstoneHeader.get( "key" )
-			value = blackstoneHeader.get( "value" )
-			if key and value:
-				headers[ key ] = value
+				headers = {}
+				blackstoneHeader = self.InitializationSettings.get( "blackstone_header" ) or {}
+				key = blackstoneHeader.get( "key" )
+				value = blackstoneHeader.get( "value" )
+				if key and value:
+					headers[ key ] = value
 
-			response = self.Session.get( location, headers = headers, stream = True )
+				response = self.Session.get( location, headers = headers, stream = True, timeout = Kobo.DownloadTimeout )
 
-		response.raise_for_status()
-		with open( outputPath, "wb" ) as f:
-			for chunk in response.iter_content( chunk_size = 1024 * 256 ):
-				f.write( chunk )
+			return response
+
+		self.__StreamToFile( request, outputPath )
 
 	# Audiobooks are delivered as a manifest listing the individual audio parts, unlike
 	# books which are a single file behind the "content_access_book" endpoint. The
